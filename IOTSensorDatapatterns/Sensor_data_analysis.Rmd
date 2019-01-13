@@ -1,0 +1,427 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+Introduction
+An IOT sensor has been designed to measure 6 environmental parameters such as temperature, humidity, CO2, VOC (Volatile Organic Compound), Light and noise of a closed room in a commercial buildings. Each IOT sensor posts data to the database. A building may comprise of serval sensors located at certain distance from each other.
+
+The results are described below.
+
+```{r}
+```
+
+```{r setup}
+    knitr::opts_knit$set(root.dir = normalizePath("/Users/anon/GitHubRepos/CourseFiles/IOTSensorDataPatterns/")) 
+```
+
+```{r message=FALSE}
+library(pspline)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(reshape2)
+```
+
+```{r}
+
+iot_data_1 <- read.csv("Assignment_Data.csv")
+
+iot_data_2 <- read.csv("Assignment_Data2.csv")
+iot_data_full <- rbind(iot_data_1,iot_data_2)
+```
+
+```{r}
+
+#NEed to find outliers - this could tackle abnormal data problem
+# Need to find same values in the same timestamp - same data posted more than once issue
+# missing values
+
+#Disaggregating the date_time to dates and hms
+iot_data_full$posixdate <- as.POSIXct(iot_data_full$date_time)
+iot_data_full$date <- date(iot_data_full$posixdate)
+iot_data_full$year <- year(iot_data_full$posixdate)
+iot_data_full$month <- month(iot_data_full$posixdate)
+iot_data_full$day <- day(iot_data_full$posixdate)
+iot_data_full$day_of_week <- weekdays(iot_data_full$posixdate)
+
+iot_data_full$hour <- hour(iot_data_full$posixdate)
+iot_data_full$minutes <- minute(iot_data_full$posixdate)
+iot_data_full$secs <- second(iot_data_full$posixdate)
+
+iot_data_full$monthhalf <- ifelse(iot_data_full$day %in% c(1:15),"First Half", "Second Half")
+
+```
+
+```{r}
+
+#finding the differences in successive records for minutes,hours,days,months
+
+iot_data_full$min_diff[2:nrow(iot_data_full)] <- diff(iot_data_full$minutes)
+iot_data_full$hour_diff[2:nrow(iot_data_full)] <- diff(iot_data_full$hour)
+iot_data_full$day_diff[2:nrow(iot_data_full)] <- diff(iot_data_full$day)
+iot_data_full$month_diff[2:nrow(iot_data_full)] <- diff(iot_data_full$month)
+
+```
+
+```{r}
+
+#Finding missing values
+#Defining an operator for opposite of %in%
+
+"%ni%" <- Negate("%in%")
+
+months_missing <- iot_data_full[which(iot_data_full$month_diff %ni% c(1,0,-11,NA)),]
+
+```
+
+```{r}
+
+#during month shift (last day of month to first day of next month) - checking day difference
+ 
+days_missing_oddmonth <- iot_data_full[which(iot_data_full$month_diff==1 & iot_data_full$month %in%  c(1,5,7,8,10,12) & iot_data_full$day_diff != -29 ),]
+
+days_missing_evenmonth <- iot_data_full[which(iot_data_full$month_diff==1 & iot_data_full$month %in% c(2,4,6,9,11) & iot_data_full$day_diff != -30),]
+
+#during shift from feb to mar - checking the day difference - separately for leap and non leap
+days_missing_feb_leap <-iot_data_full[which(iot_data_full$year %% 4 == 0 & 
+  iot_data_full$month_diff==1 & iot_data_full$month == 3 & iot_data_full$day_diff != -28),]
+
+days_missing_feb_nonleap <- iot_data_full[which(iot_data_full$year %% 4 != 0 &
+  iot_data_full$month_diff==1 & iot_data_full$month == 3 & iot_data_full$day_diff != -27),]
+
+```
+
+```{r}
+
+#INcorrect hour difference
+days_missing_23_59 <- iot_data_full[which(iot_data_full$day_diff==1 & iot_data_full$hour_diff !=
+   -23),]
+
+#days missing within same month
+days_missing_samemonth <- iot_data_full[which(iot_data_full$month_diff == 0 & iot_data_full$
+   day_diff %ni% c(1,0,NA)),]
+
+#Hour missing
+hour_missing <- iot_data_full[which(iot_data_full$hour_diff %ni% c(1,0,-23,NA)),]
+
+#Checking for minute differences
+#minute differences can only be -59 or 1. 
+
+minute_missing <- iot_data_full[which(iot_data_full$min_diff %ni% c(-59,1,NA)),]
+
+minute_missing_hourshift <- iot_data_full[which(iot_data_full$hour_diff %in% c(1,-23) & 
+                            iot_data_full$min_diff == 1),]
+
+
+```
+
+```{r}
+
+#finding abnormal values
+temp <- iot_data_full
+temp$temp_diff[2:nrow(iot_data_full)] <- diff(iot_data_full$Temperature)
+temp$voc_diff[2:nrow(iot_data_full)] <- diff(iot_data_full$VOC)
+temp$humid_diff[2:nrow(iot_data_full)] <- diff(iot_data_full$Humidity)
+temp$noise_diff[2:nrow(iot_data_full)] <- diff(iot_data_full$Noise)
+temp$light_diff[2:nrow(iot_data_full)] <- diff(iot_data_full$Light)
+temp$co2_diff[2:nrow(iot_data_full)] <- diff(iot_data_full$Co2)
+
+```
+
+```{r}
+
+######Temperature abnormal values
+
+##Finding the stand deviation of every successive group of 4 of the difference in temperature
+## starting from the second row as first value is NA
+SD_values_diff <- unlist(lapply(seq(2,nrow(temp),4), function(x) sd(temp$temp_diff[x:(x+3)])))
+
+## Abnormal values are those whose SD is greater than the 90 percentile plus 10 times IQR of the SDs
+
+abnormal_SD_temp_diff_indices <- which(SD_values_diff > quantile(SD_values_diff,probs = c(0.9))+10*IQR(SD_values_diff))
+
+## What was found above was the abnormally high SDs. to find out to which rows they correspond
+## to in the file. Makes use of arithmetic progression - 2 is because initial term is 2 and 
+# diffeerence is 4 as we tok SD for groups of 4 values.
+## the ouput is a row index
+
+abnormal_temp_diff_rows <- unlist(lapply(abnormal_SD_temp_diff_indices, function(x) 2+((x-1)*4)))
+
+```
+
+```{r echo = T, results = 'hide'}
+
+## This does the imputation of the abnormal values. What is done is - the rows corresponding
+##maximum and minimum values in the range of the row index obtained frm previous step - 10 
+## to row index + 10. which gives the row index for that particular operations range. so it
+## has to be translated to the actual row index of the file by subtracting 1 and
+##adding with the starting value
+ 
+lapply(abnormal_temp_diff_rows, function(x) temp$Temperature[(x-10) + ((which.min(temp$Temperature[(x-10):(x+10)]))-1)] <<-  
+         median(temp$Temperature[(x-10):(x+10)]))
+
+lapply(abnormal_temp_diff_rows, function(x) temp$Temperature[(x-10) + ((which.max(temp$Temperature[(x-10):(x+10)]))-1)] <<-  
+         median(temp$Temperature[(x-10):(x+10)]))
+```
+
+```{r message=FALSE,echo = T, results = 'hide'}
+
+#######
+#VOC abnormal value handling
+#######
+SD_voc_values_diff <- unlist(lapply(seq(2,nrow(temp),4), function(x) sd(temp$voc_diff[x:(x+3)])))
+
+abnormal_SD_voc_diff_indices <- which(SD_voc_values_diff > quantile(SD_voc_values_diff,probs = c(0.9))+10*IQR(SD_voc_values_diff))
+abnormal_voc_diff_rows <- unlist(lapply(abnormal_SD_voc_diff_indices, function(x) 2+((x-1)*4)))
+
+lapply(abnormal_voc_diff_rows, function(x) temp$VOC[(x-10) + ((which.min(temp$VOC[(x-10):(x+10)]))-1)] <<-  
+         median(temp$VOC[(x-10):(x+10)]))
+
+lapply(abnormal_voc_diff_rows, function(x) temp$VOC[(x-10) + ((which.max(temp$VOC[(x-10):(x+10)]))-1)] <<-  
+         median(temp$VOC[(x-10):(x+10)]))
+```
+
+```{r message=FALSE,echo = T, results = 'hide'}
+
+#######
+#humid abnormal value handling
+#######
+SD_humid_values_diff <- unlist(lapply(seq(2,nrow(temp),4), function(x) sd(temp$humid_diff[x:(x+3)])))
+
+abnormal_SD_humid_diff_indices <- which(SD_humid_values_diff > quantile(SD_humid_values_diff,probs = c(0.9))+10*IQR(SD_humid_values_diff))
+abnormal_humid_diff_rows <- unlist(lapply(abnormal_SD_humid_diff_indices, function(x) 2+((x-1)*4)))
+
+lapply(abnormal_humid_diff_rows, function(x) temp$Humidity[(x-10) + ((which.min(temp$Humidity[(x-10):(x+10)]))-1)] <<-  
+         median(temp$Humidity[(x-10):(x+10)]))
+
+lapply(abnormal_humid_diff_rows, function(x) temp$Humidity[(x-10) + ((which.max(temp$Humidity[(x-10):(x+10)]))-1)] <<-  
+         median(temp$Humidity[(x-10):(x+10)]))
+
+```
+
+```{r message=FALSE,echo = T, results = 'hide'}
+
+#######
+#noise abnormal value handling
+#######
+
+SD_noise_values_diff <- unlist(lapply(seq(2,nrow(temp),4), function(x) sd(temp$noise_diff[x:(x+3)])))
+
+abnormal_SD_noise_diff_indices <- which(SD_noise_values_diff > quantile(SD_noise_values_diff,probs = c(0.9))+10*IQR(SD_noise_values_diff))
+abnormal_noise_diff_rows <- unlist(lapply(abnormal_SD_noise_diff_indices, function(x) 2+((x-1)*4)))
+
+lapply(abnormal_noise_diff_rows, function(x) temp$Noise[(x-10) + ((which.min(temp$Noise[(x-10):(x+10)]))-1)] <<-  
+         median(temp$Humidity[(x-10):(x+10)]))
+
+lapply(abnormal_noise_diff_rows, function(x) temp$Noise[(x-10) + ((which.max(temp$Noise[(x-10):(x+10)]))-1)] <<-  
+         median(temp$Noise[(x-10):(x+10)]))
+```
+
+```{r message=FALSE}
+
+#######
+#Light abnormal value handling
+#######
+
+SD_light_values_diff <- unlist(lapply(seq(2,nrow(temp),4), function(x) sd(temp$light_diff[x:(x+3)])))
+
+abnormal_SD_light_diff_indices <- which(SD_light_values_diff > quantile(SD_light_values_diff,probs = c(0.9))+10*IQR(SD_light_values_diff))
+abnormal_light_diff_rows <- unlist(lapply(abnormal_SD_light_diff_indices, function(x) 2+((x-1)*4)))
+
+lapply(abnormal_light_diff_rows, function(x) temp$Light[(x-10) + ((which.min(temp$Light[(x-10):(x+10)]))-1)] <<-  
+         median(temp$Light[(x-10):(x+10)]))
+
+lapply(abnormal_light_diff_rows, function(x) temp$Light[(x-10) + ((which.max(temp$Light[(x-10):(x+10)]))-1)] <<-  
+         median(temp$Light[(x-10):(x+10)]))
+
+```
+
+```{r message=FALSE,echo = T, results = 'hide'}
+
+#######
+#Co2 abnormal value handling
+#######
+
+SD_co2_values_diff <- unlist(lapply(seq(2,nrow(temp),4), function(x) sd(temp$co2_diff[x:(x+3)])))
+
+abnormal_SD_co2_diff_indices <- which(SD_co2_values_diff > quantile(SD_co2_values_diff,probs = c(0.9))+10*IQR(SD_co2_values_diff))
+abnormal_co2_diff_rows <- unlist(lapply(abnormal_SD_co2_diff_indices, function(x) 2+((x-1)*4)))
+
+lapply(abnormal_co2_diff_rows, function(x) temp$Co2[(x-10) + ((which.min(temp$Co2[(x-10):(x+10)]))-1)] <<-  
+         median(temp$Co2[(x-10):(x+10)]))
+
+lapply(abnormal_co2_diff_rows, function(x) temp$Co2[(x-10) + ((which.max(temp$Co2[(x-10):(x+10)]))-1)] <<-  
+         median(temp$Co2[(x-10):(x+10)]))
+
+```
+
+```{r}
+
+####Mapping imputed values to original variables
+iot_data_full$Temperature <- temp$Temperature
+iot_data_full$Noise <- temp$Noise
+iot_data_full$Light <- temp$Light
+iot_data_full$Co2 <- temp$Co2
+iot_data_full$VOC <- temp$VOC
+iot_data_full$Humidity <- temp$Humidity
+```
+
+```{r}
+
+#########
+##Finding repetition
+#######
+for(i in 3:8){
+var_name <- paste(colnames(temp)[i],"rep",sep="_")
+temp[[var_name]] <- ifelse(temp[,(i+20)] == 0, "R","NR")
+iot_data_full[[var_name]] <- temp[[var_name]]
+}
+```
+
+```{r}
+
+########Findings
+#Is there any pattern in when the different sensors kick in?
+#  Is there any pattern int he missing data
+#pattern in the various parameters with respect to time
+#weekday weekend patterns
+#morning afternoon night patterns
+#highs and lows of the various parameters - are they in sync or variation
+#which parameter exhibits maximum variation and which the minimum
+#figure out what room it is based on the parameters - use benchmark ranges for the parameters
+#check if sensor id corresponds to particular values (ranges) of parameters
+#######
+
+###finding sensor patters
+ggplot(iot_data_full[(1:40000),c("unitid","day_of_week")])+geom_point(aes(x=unitid,y=day_of_week))
+
+ggplot(iot_data_full[(1:40000),c("unitid","day")])+geom_point(aes(x=unitid,y=day))
+
+ggplot(iot_data_full[(1:40000),c("unitid","hour")])+geom_point(aes(x=unitid,y=hour))
+
+
+###no specific pattern observed
+
+ggplot(minute_missing[,c("unitid","hour")]) + geom_point(aes(x=unitid,y=hour))
+
+ggplot(hour_missing[,c("unitid","hour")]) + geom_point(aes(x=unitid,y=hour))
+
+
+```
+
+```{r}
+
+######most days missing data
+
+days_with_most_missing <- rbind(minute_missing[,c("posixdate","day_of_week")],hour_missing[,c("posixdate","day_of_week")])
+days_with_most_missing <- days_with_most_missing %>% group_by(day_of_week) %>% summarise(count=n())
+
+ggplot(days_with_most_missing)+geom_bar(aes(x=reorder(day_of_week,-count),y=count), stat = "identity", width = 0.7, fill="orange", col="black")+
+  labs(x="Day of week",title="Missing value occurences across Days")
+
+
+##Sunday has the maximum number of missing data instances
+
+```
+
+```{r}
+
+#####Time respective pattern for all parameters
+
+plotting_hour_parameter <- function(parameter){
+  plot <- ggplot()+geom_smooth(aes(x=iot_data_full$hour,y=iot_data_full[,parameter]))+labs(x="hour",y=names(iot_data_full)[parameter], title="Hourly variation")
+  print(plot)
+}
+
+for(i in 3:8){
+  plotting_hour_parameter(i)
+}
+
+```
+
+```{r}
+
+######summary stats
+
+summary_stats <- data.frame("Parameter"=colnames(iot_data_full)[(3:8)],
+                     "Min"=t(iot_data_full %>% summarise_at(3:8,min)),
+                      "Max"=t(iot_data_full %>% summarise_at(3:8,max)),
+                     "Median"=t(iot_data_full %>% summarise_at(3:8,median)),
+                     "Standard_Deviation"=t(iot_data_full %>% summarise_at(3:8,sd)))
+
+```
+
+```{r}
+write.csv(summary_stats,"summary_stats.csv")
+
+```
+
+```{r}
+
+####day respective patterns for all parameters
+plotting_dayweek_parameter <- function(parameter){
+  param_day_week <- iot_data_full %>% group_by(day_of_week) %>% summarise_at(parameter,funs("Min"=min,"Max"=max,"Mean"=mean))
+  
+  #print(param_day_week)
+  param_day_week$day_of_week <- factor(param_day_week$day_of_week, levels = c("Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"))
+  param_day_week <- param_day_week[order(param_day_week$day_of_week),]
+  
+  param_day_week_transpose <- data.frame(t(param_day_week[,-1]))
+  colnames(param_day_week_transpose) <- param_day_week$day_of_week
+  param_day_week_transpose <- tibble::rownames_to_column(param_day_week_transpose,var = "Value")
+  
+  param_day_week_melted <- melt(param_day_week_transpose,id = "Value")
+  
+  plot1 <- ggplot(param_day_week_melted) + geom_bar(aes(x = Value, y=value, fill=variable), stat = 
+                                            'identity', position = "dodge", width=0.6) + scale_fill_brewer(palette = "Spectral") +
+    labs(x="Summary Measure",y=paste(colnames(iot_data_full)[parameter],"value"),title=paste(colnames(iot_data_full)[parameter]," variation across days"),fill="Days")
+  print(plot1)
+}
+
+for(i in 3:8){
+  plotting_dayweek_parameter(i)
+}
+```
+
+```{r}
+################
+
+plotting_monthhalf_parameter <- function(parameter){
+  param_month_half <- iot_data_full %>% group_by(monthhalf) %>% summarise_at(parameter,funs("Min"=min,"Max"=max,"Mean"=mean))
+  
+  print(param_month_half)
+  param_month_half$monthhalf <- factor(param_month_half$monthhalf, levels = c("First Half","Second Half"))
+  param_month_half <- param_month_half[order(param_month_half$monthhalf),]
+  
+  param_month_half_transpose <- data.frame(t(param_month_half[,-1]))
+  colnames(param_month_half_transpose) <- param_month_half$monthhalf
+  param_month_half_transpose <- tibble::rownames_to_column(param_month_half_transpose,var = "Value")
+  
+  param_month_half_melted <- melt(param_month_half_transpose,id = "Value")
+  
+  plot1 <- ggplot(param_month_half_melted) + geom_bar(aes(x = Value, y=value, fill=variable), stat = 
+                                                      'identity', position = "dodge", width=0.6) + scale_fill_brewer(palette = "Dark2") +
+    labs(x="Summary Measure",y=paste(colnames(iot_data_full)[parameter],"value"),title=paste(colnames(iot_data_full)[parameter]," variation across days"),fill="Days")
+  print(plot1)
+}
+
+for(i in 3:8){
+  plotting_monthhalf_parameter(i)
+}
+
+```
+
+```{r}
+
+
+
+```
+
+```{r}
+
+
+```
+
+
+

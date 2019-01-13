@@ -1,0 +1,238 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+A Portuguese banking institution is interested in unleashing a marketing campaign for the subscription of its term deposits. The marketing campaign will be focussed towards the existing customers of the banking institution. The bank does have historical data of its customers encompassing a wide range of attributes (Client information, previous cam-paign and other socio economic attributes). 
+
+In the interest of spending money judiciously, the bank would like to know beforehand the possibility of a customer subscribing to its term deposit. With this knowledge, the bank can target a select pool of customers, thereby reducing its marketing campaign ex-penses and at the same time getting a higher conversion ratio (Number of customers sub-scribing to the term deposit over the number of customers contacted).
+
+Armed with the historical data about the bank’s clients and the previous marketing cam-paigns, the objective is to develop a Classification (Logistic Regression) algorithm which would predict if a customer would or would not subscribe to a term deposit. Thus, this would be a binary (yes/no) classification problem with 20 predictor variables to start with.
+
+Data can be found at https://archive.ics.uci.edu/ml/datasets/Bank+Marketing#
+
+
+```{r setup}
+    knitr::opts_knit$set(root.dir = normalizePath("/Users/anon/GitHubRepos/CourseFiles/Classification/")) 
+```
+
+
+```{r include = FALSE}
+getwd()
+```
+
+```{r message=FALSE}
+
+library(ggplot2)
+library(caret)
+library(dummies)
+library(reshape2)
+library(unbalanced)
+library(ROCR)
+library(rms)
+```
+
+```{r}
+
+#Reading the file. Sep = ; was used as with , all variables were coming under a single column
+bank_data <- read.csv("bank-additional-full.csv", header = TRUE, sep = ";", na.strings = c(""))
+
+```
+
+```{r}
+#Removing duration as instructed. its value is known only after call is made
+bank_data$duration <- NULL
+```
+
+```{r}
+#finding missing values
+sapply(bank_data, function(x) sum(is.na(x)))
+```
+
+```{r}
+
+#creating boxplot for the numeric variables for exploration
+melt_bank_data <- melt(bank_data[,sapply(bank_data,is.numeric)])
+ggplot(data=melt_bank_data,aes(x=variable,y=value))+geom_boxplot()+facet_wrap(~variable,scales="free")+theme_bw()
+
+```
+
+```{r}
+
+#Binning Age numeric variable into age_binned which is a factor variable with 6 levels
+bank_data$age_binned <- cut(bank_data$age, c(16,33,39,48,98))
+
+```
+
+```{r}
+
+#Converting previous and pdays values to contacted and non contacted as there is a 
+#heavy skew towards zero and 999 value
+bank_data$previous_cat <- ifelse(bank_data$previous==0,'Not Contacted','Contacted')
+bank_data$pdays_cat <- ifelse(bank_data$pdays==999,'Not Contacted','Contacted')
+bank_data$previous_cat <- as.factor(bank_data$previous_cat)
+bank_data$pdays_cat <- as.factor(bank_data$pdays_cat)
+
+```
+
+```{r}
+
+#Creating the (log) transformed campaign variable
+bank_data$log_campaign <- log(1+bank_data$campaign)
+
+```
+
+```{r include=FALSE}
+
+
+
+```
+
+```{r include=FALSE}
+
+```
+
+```{r}
+
+#Grouping three basic levels in education to one basic
+basic <- c("basic.4y","basic.6y","basic.9y")
+bank_data$education <- as.character(bank_data$education)
+bank_data$education[bank_data$education %in% basic]<- 'basic'
+bank_data$education<-as.factor(bank_data$education)
+```
+
+```{r}
+
+#Converting yes to 1 and no to 0 in target variable y
+bank_data$y <- ifelse(bank_data$y == "yes",1,0)
+
+#dropping columns which are not required. variables dropped because of their transformation
+columns_to_be_dropped <- c("age","campaign","pdays","previous")
+bank_data_processed <- bank_data[,!names(bank_data) %in% columns_to_be_dropped]
+```
+
+```{r}
+
+#ggplot for numeric predictors and target 
+data_long = melt(bank_data_processed[, sapply(bank_data_processed, is.numeric)], id='y')
+
+ggplot(data_long, aes(x = value, group=y, color=factor(y)) )+ 
+  geom_density()+ facet_wrap(~variable, scales="free")
+
+```
+
+```{r}
+
+#Creating dummy variables for levels of all factor variables
+bank_data_dummy <- dummy.data.frame(bank_data_processed,names = c("job","education","marital","housing","loan","default","contact","month","day_of_week","poutcome","previous_cat","pdays_cat","age_binned"))
+
+#Creating training and test sets
+set.seed(100)
+sample_list <- sample.int(nrow(bank_data_dummy), size = floor(0.7*nrow(bank_data_dummy)), replace = FALSE)
+train_data_unbalanced <- bank_data_dummy[sample_list,]
+test_data <- bank_data_dummy[-sample_list,]
+```
+
+```{r}
+
+#Data balancing using ubSmote
+set.seed(98765)
+balanced <- ubSMOTE(train_data_unbalanced[,-which(names(train_data_unbalanced)=='y')],as.factor(train_data_unbalanced$y),perc.over = 200,k=5,perc.under = 200)
+train_data_balanced <- cbind(balanced$X,Class=balanced$Y)
+
+```
+
+```{r}
+
+#implementing the model
+bank_model <- glm(Class~., data = train_data_balanced, family = binomial)
+summary(bank_model)
+```
+
+
+```{r}
+
+#Model iteration
+bank_model_1 <- glm(Class~jobadmin.+jobretired+educationbasic+educationhigh.school+educationuniversity.degree+defaultno+housingno+contactcellular+monthapr+monthaug+monthdec+monthjul+monthjun+monthmar+monthmay+monthnov+monthoct+day_of_weekthu+poutcomefailure+emp.var.rate+cons.conf.idx+cons.price.idx+euribor3m+pdays_catContacted+log_campaign,data=train_data_balanced,family=binomial)
+summary(bank_model_1)
+```
+
+```{r}
+
+#Predicting on the training set and finding accuracy using confusion matrix
+pred_train <- predict(bank_model, train_data_balanced, type = "response")
+pred_train[pred_train<=0.5]=0
+pred_train[pred_train>0.5]=1
+confusionMatrix(pred_train,train_data_balanced$Class,positive = '1')
+
+```
+
+```{r}
+
+pred_train_1 <- predict(bank_model_1, train_data_balanced, type = "response")
+pred_train_1[pred_train_1<=0.5]=0
+pred_train_1[pred_train_1>0.5]=1
+confusionMatrix(pred_train_1,train_data_balanced$Class,positive = '1')
+```
+
+```{r}
+
+#Predicting on the test set and finding accuracy using confusion matrix
+pred_test <- predict(bank_model, test_data, type = "response")
+pred_test[pred_test<=0.5]=0
+pred_test[pred_test>0.5]=1
+CM <- confusionMatrix(pred_test,test_data$y,positive = '1')
+CM
+```
+
+```{r}
+pred_test_1 <- predict(bank_model_1, test_data, type = "response")
+pred_test_1[pred_test_1<=0.2]=0
+pred_test_1[pred_test_1>0.2]=1
+CM <- confusionMatrix(pred_test_1,test_data$y,positive = '1')
+CM
+```
+
+```{r}
+
+#Finding area under curve for test set prediction and plotting the curve too
+pred_auc <- prediction(pred_test_1,test_data$y)
+perf <- performance(pred_auc, measure = "tpr", x.measure = "fpr")
+plot(perf,main="AUC on test prediction")
+abline(a=0,b=1,lwd=2,lty=2,col="red")
+
+auc <- performance(pred_auc, measure = "auc")
+auc_value <- auc@y.values
+round(as.numeric(auc_value), digits = 4)
+```
+
+```{r}
+
+#Trend of specificity, sensitivty and accuracy with threshold
+value_sensitivity <- vector()
+value_specificity <- vector()
+value_accuracy <- vector()
+
+
+for (i in seq(0.1,0.5,0.05)) {
+  pred_test_1 <- predict(bank_model_1, test_data, type = "response")
+  pred_test_1[pred_test_1<=i]=0
+  pred_test_1[pred_test_1>i]=1
+  CM <- confusionMatrix(pred_test_1,test_data$y,positive = '1')
+  value_sensitivity<-c(value_sensitivity,CM[[4]][1])
+  value_specificity<-c(value_specificity,CM[[4]][2])
+  value_accuracy<- c(value_accuracy,(CM[[3]][1]))
+}
+plot(seq(0.1,0.5,0.05),value_accuracy,col="red",main="Change in Accuracy over different threshold values",xlab="Threshold value",ylab="Accuracy")
+lines(seq(0.1,0.5,0.05),value_accuracy)
+
+plot(seq(0.1,0.5,0.05),value_sensitivity,col="red",main="Change in Sensitivity over different threshold values",xlab="Threshold value",ylab="Sensitivity")
+lines(seq(0.1,0.5,0.05),value_sensitivity)
+
+plot(seq(0.1,0.5,0.05),value_specificity,col="red",main="Change in Specificity over different threshold values",xlab="Threshold value",ylab="Specificity")
+lines(seq(0.1,0.5,0.05),value_specificity)
+
+```
+
+
+

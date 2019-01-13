@@ -1,0 +1,234 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+OBJECTIVE:
+Kerala is a state in the south western part of India. It is one of the most literate states in India and also enjoys the highest Human Development Index compared to other states in India. 
+
+The Health Management Information System (HMIS) is an online portal which gathers and displays health related indicators of India. The level of granularity is the subdistrict (the hierarchy can be visualized as country -> state -> district -> sub-district).
+
+For this linear regression exercise, we considered the HMIS indicators for the 292 sub districts (corresponding to 14 districts) of Kerala for the year periods 2014-15 and 2015-16. While the overall HMIS indicators are quite comprehensive, we considered only the child birth related HMIS indicators. In particular, we are interested in understanding the impact of various factors (different independent variables) on the number of babies born with a birth weight less than 2.5 kg (dependent variable) across the sub districts and for the two-time periods.
+
+Data is from #https://data.gov.in/catalog/performance-key-hmis-indicators-across-sub-districts-kerala
+
+
+```{r setup}
+    knitr::opts_knit$set(root.dir = normalizePath("/Users/anon/GitHubRepos/CourseFiles/Regression/"))
+```
+
+```{r include=FALSE}
+getwd()
+```
+
+```{r message=FALSE}
+library(data.table)
+library(tibble)
+library(ggplot2)
+library(reshape2)
+library(corrplot)
+library(MASS)
+library(knitr)
+```
+
+```{r}
+
+#Reading the 14 files - only the first 104 columns which correspond to the period from pregnancy
+#to birth
+data_1 <- fread("Alappuzha.csv", select = c(1:104))
+data_2 <- fread("Ernakulam.csv", select = c(1:104))
+data_3 <- fread("Idukki.csv", select = c(1:104))
+data_4 <- fread("Kannur.csv", select = c(1:104))
+data_5 <- fread("Kasaragod.csv", select = c(1:104))
+data_6 <- fread("Kollam.csv", select = c(1:104))
+data_7 <- fread("Kottayam.csv", select = c(1:104))
+data_8 <- fread("KOZHIKKODE.csv", select = c(1:104))
+data_9 <- fread("Malappuram.csv", select = c(1:104))
+data_10 <- fread("Palakkad.csv", select = c(1:104))
+data_11 <- fread("Pathanamthitta.csv", select = c(1:104))
+data_12 <- fread("Thiruvananthapuram.csv", select = c(1:104))
+data_13 <- fread("Thrissur.csv", select = c(1:104))
+data_14 <- fread("Wayanad.csv", select = c(1:104))
+
+```
+
+```{r}
+
+data_1 <- add_column(data_1, Indicator_no=1, .after = 2)
+data_2 <- add_column(data_2, Indicator_no=2, .after = 2)
+data_3 <- add_column(data_3, Indicator_no=3, .after = 2)
+data_4 <- add_column(data_4, Indicator_no=4, .after = 2)
+data_5 <- add_column(data_5, Indicator_no=5, .after = 2)
+data_6 <- add_column(data_6, Indicator_no=6, .after = 2)
+data_7 <- add_column(data_7, Indicator_no=7, .after = 2)
+data_8 <- add_column(data_8, Indicator_no=8, .after = 2)
+data_9 <- add_column(data_9, Indicator_no=9, .after = 2)
+data_10 <- add_column(data_10, Indicator_no=10, .after = 2)
+data_11 <- add_column(data_11, Indicator_no=11, .after = 2)
+data_12 <- add_column(data_12, Indicator_no=12, .after = 2)
+data_13 <- add_column(data_13, Indicator_no=13, .after = 2)
+data_14 <- add_column(data_14, Indicator_no=14, .after = 2)
+
+```
+
+```{r}
+
+#Combining all the 14 dataframes to one
+data_combined <- data.frame(rbind(data_1,data_2,data_3,data_4,data_5,data_6,data_7,data_8,data_9,
+                                  data_10,data_11,data_12,data_13,data_14))
+
+
+```
+
+```{r}
+
+#Each file has one row which indicates the total values for all subdistricts - removing this
+data_combined <- data_combined[-which(data_combined$S.No == "Total"),]
+
+#The data corresponds to two time periods 2014-15 and 2015-16. The features are given for both
+#these time periods and is column wise. 
+#Converting this to a different format - where year (time period) is a new feature and the hmis
+# features appear only once with corresponding values for both the time periods
+
+# creating two separate dataframes - one for 14-15 and one for 15-16
+
+data_transform_1516 <- data_combined[,c(2,3,grep("2015.16", colnames(data_combined)))]
+data_transform_1516 <- add_column(data_transform_1516, year="2015-16", .after = 1)
+
+```
+
+```{r}
+
+#removing the string indicating the time period from the column names
+# it will also make it possible to combine the two dataframes
+names(data_transform_1516) <- gsub(names(data_transform_1516), pattern = "2015.16", replacement = "")
+
+
+data_transform_1415 <- data_combined[,c(2,3,grep("2014.15", colnames(data_combined)))]
+data_transform_1415 <- add_column(data_transform_1415, year="2014-15", .after = 1)
+names(data_transform_1415) <- gsub(names(data_transform_1415), pattern = "2014.15", replacement = "")
+
+#combining the two dataframes
+data_transform_combined <- rbind(data_transform_1415,data_transform_1516)
+
+```
+
+```{r}
+
+#Writing this to a csv file to do some more cleaning on the column names
+write.csv(data_transform_combined,"hmis_data_cleaned.csv")
+
+```
+
+```{r}
+
+#Reading the cleaned data
+cleaned_data <- read.csv("hmis_data_cleaned_final.csv")
+
+#Removing the rows with target variable NA
+cleaned_data <- cleaned_data[-which(is.na(cleaned_data$Perc_Newborns_having_weight_less_than_2.5.kg_to_Newborns_weighed_at_birth)),]
+
+#Removing these columns as they are events during delivery which would have not an impact on 
+#childs weight
+cleaned_data$home_deliveries_attended_by_SBA_trained_Doctor_Nurse <- NULL
+cleaned_data$home_deliveries_attended_by_Non_SBA_trained <- NULL
+cleaned_data$Mothers_paid_JSY_incentive_for_home_deliveries <- NULL
+cleaned_data$Total_Number_of_reported_Still_Births <- NULL
+cleaned_data[,grep("Perc",colnames(cleaned_data))] <- NULL
+
+```
+
+```{r}
+
+## Removing the Indicator column as the subdistricts under INdiactor column are coded as 1 to 14
+# under INdicator_no column
+
+cleaned_data$Indicator <- NULL
+names(cleaned_data)[grep("conducted",names(cleaned_data), ignore.case = TRUE)] <- gsub("conducted",
+      "",names(cleaned_data)[grep("conducted",names(cleaned_data), ignore.case = TRUE)],
+      ignore.case = TRUE)
+names(cleaned_data)[14] <- "Institutional_deliveries_Public_Pvt"
+##Setting the name of the target variable Number_of_Newborns_having_weight_less_than_2.5.kg
+##as target
+names(cleaned_data)[20] <- "Target"
+
+summary(cleaned_data)
+```
+
+```{r}
+
+cleaned_data[which(is.na(cleaned_data$Number_having_severe_anaemia_Hb_7_treated_at_institutin)),"Number_having_severe_anaemia_Hb_7_treated_at_institutin"] <-
+  median(cleaned_data$Number_having_severe_anaemia_Hb_7_treated_at_institutin, na.rm = TRUE)
+
+cleaned_data[which(is.na(cleaned_data$Total_home_deliveries)),"Total_home_deliveries"] <- 
+  (cleaned_data[which(is.na(cleaned_data$Total_home_deliveries)),"Total_reported_deliveries"] -
+  cleaned_data[which(is.na(cleaned_data$Total_home_deliveries)),"Institutional_deliveries_Public_Pvt"])
+
+
+cleaned_data <- cleaned_data[-which(is.na(cleaned_data$Number_of_C_section_deliveries__at_private_facilities)),]
+
+```
+
+```{r}
+
+#Correlation plot
+corrplot(cor(cleaned_data[,-(1:2)], use = "complete.obs"), type = "lower", tl.cex = 0.5)
+
+```
+
+```{r}
+
+#histogram of all variables
+ggplot(melt(cleaned_data[,-1])) + geom_histogram(aes(x = value), bins = 30) + facet_wrap(~variable,scales="free")
+
+```
+
+```{r}
+
+###Running the model
+model_1 <- lm(Target ~ ., data = cleaned_data[,-c(1:2)])
+summary(model_1)
+
+
+plot(model_1$residuals)
+plot(model_1)
+```
+
+```{r}
+
+plot(cleaned_data$Target, model_1$fitted.values, xlim=c(0,1000), ylim=c(0,1000), xlab = "Actual values", ylab="Fitted values", main = "Actual vs Fitted")
+plot(hist(model_1$residuals), main = "Histogram of residuals", xlab="Residuals")
+plot(model_1$fitted.values, rstandard(model_1), xlim=c(0,1000), xlab="Fitted values", ylab="Standardized Residuals", main = "Fitted values vs Standardized Residuals")
+
+
+```
+
+```{r}
+
+log_cleaned_data <- cleaned_data
+log_cleaned_data[,(4:20)] <- sapply(log_cleaned_data[,(4:20)], function(x) log(2+x))
+log_cleaned_data$year <- ifelse(log_cleaned_data$year=="2014-15",1,2)
+
+```
+
+```{r}
+model_log_1 <- lm(Target ~ ., data = log_cleaned_data[,-(1:2)])
+summary(model_log_1)
+```
+
+```{r}
+plot(hist(model_log_1$residuals), main = "Histogram of Residuals", xlab = "Residuals")
+plot(model_log_1$fitted.values, rstandard(model_log_1))
+plot(log_cleaned_data$Target,model_log_1$fitted.values, main="Actual vs Fitted", xlab="Actual values", ylab="Fitted values")
+
+```
+
+```{r}
+
+model_2 <- lm(Target ~ Total_pregnant_women_registered_ANC+Total_registered_under_JSY+
+                Total_received_3_ANC_check_ups+Total_given_100_IFA_tablets+Number_having_severe_anaemia_Hb_7_treated_at_institutin+
+                Deliveries__at_Public_Institutions+Number_of_C_section_deliveries__at_public_facilities+
+                Number_of_C_section_deliveries__at_private_facilities, data = cleaned_data[,-1])
+summary(model_2)
+```
+.
+
